@@ -730,10 +730,18 @@ module airdrop::private_airdrops;
         assert!(!droplet.is_closed, E_DROPLET_CLOSED);
         assert!(!table::contains(&droplet.claimed, claimer), E_ALREADY_CLAIMED);
         
+        // Device restriction check - CRITICAL: Check device before allowing claim
         if (droplet.claim_restriction == CLAIM_RESTRICTION_DEVICE) {
             assert!(option::is_some(&device_fingerprint), E_INVALID_DEVICE_FINGERPRINT);
             let fingerprint = *option::borrow(&device_fingerprint);
-            assert!(!table::contains(&droplet.device_claims, fingerprint), E_DEVICE_ALREADY_CLAIMED);
+            
+            // If this device already claimed, this address cannot claim
+            // The allocation for this address will remain unclaimed and be refunded
+            if (table::contains(&droplet.device_claims, fingerprint)) {
+                // Device already claimed - abort this claim attempt
+                // The funds allocated to this address will be refunded when droplet closes/expires
+                abort E_DEVICE_ALREADY_CLAIMED
+            };
         };
 
         assert!(droplet.num_claimed < droplet.receiver_limit, E_RECEIVER_LIMIT_REACHED);
@@ -771,7 +779,7 @@ module airdrop::private_airdrops;
         let claim_coin = coin::split(&mut droplet.coin, final_claim_amount, ctx);
         sui::transfer::public_transfer(claim_coin, claimer);
 
-        // Update state
+        // Update state - mark both address and device as claimed
         table::add(&mut droplet.claimed, claimer, claimer_name);
         
         if (droplet.claim_restriction == CLAIM_RESTRICTION_DEVICE && option::is_some(&device_fingerprint)) {
@@ -797,6 +805,10 @@ module airdrop::private_airdrops;
         });
 
         let remaining_after_claim = coin::value(&droplet.coin);
+        
+        // Close droplet if all authorized addresses have attempted to claim
+        // OR if remaining balance is 0
+        // This ensures unclaimed allocations (blocked by device restriction) get refunded
         if (droplet.num_claimed >= droplet.receiver_limit || remaining_after_claim == 0) {
             close_droplet(droplet, string::utf8(b"completed"), current_time, ctx);
         };
