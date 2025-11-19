@@ -26,54 +26,54 @@ module airdrop::private_airdrops;
     const CLAIM_RESTRICTION_DEVICE: u8 = 1;  // One claim per device
     
     // Error codes
-    #[error]
-    const E_INVALID_RECEIVER_LIMIT: vector<u8> = b"Invalid receiver limit, must be between 1 and 100000";
-    #[error]
-    const E_INSUFFICIENT_AMOUNT: vector<u8> = b"Insufficient amount provided for droplet";
-    #[error]
-    const E_ALREADY_CLAIMED: vector<u8> = b"You have already claimed from this droplet";
-    #[error]
-    const E_DEVICE_ALREADY_CLAIMED: vector<u8> = b"This device has already claimed from this droplet";
-    #[error]
-    const E_DROPLET_EXPIRED: vector<u8> = b"This droplet has expired";
-    #[error]
-    const E_DROPLET_CLOSED: vector<u8> = b"This droplet is closed";
-    #[error]
-    const E_RECEIVER_LIMIT_REACHED: vector<u8> = b"Receiver limit reached for this droplet";
-    #[error]
-    const E_INSUFFICIENT_BALANCE: vector<u8> = b"Insufficient balance in droplet to claim";
-    #[error]
-    const E_DROPLET_NOT_FOUND: vector<u8> = b"Droplet ID not found";
-    #[error]
-    const E_INVALID_FEE_PERCENTAGE: vector<u8> = b"Invalid fee percentage, must be between 0 and 1000 (10%)";
-    #[error]
-    const E_INVALID_DROPLET_ID: vector<u8> = b"Invalid droplet ID, must be exactly 6 characters";
-    #[error]
-    const E_INVALID_NAME_LENGTH: vector<u8> = b"Name must be between 2 and 20 characters";
-    #[error]
-    const E_NAME_ALREADY_TAKEN: vector<u8> = b"This name is already taken";
-    #[error]
-    const E_INVALID_DISTRIBUTION_TYPE: vector<u8> = b"Invalid distribution type";
-    #[error]
-    const E_NOT_CREATOR: vector<u8> = b"Only the creator can delete this airdrop";
-    #[error]
-    const E_CANNOT_DELETE_CLAIMED: vector<u8> = b"Cannot delete airdrop after claims have been made";
-    #[error]
-    const E_INVALID_CLAIM_RESTRICTION: vector<u8> = b"Invalid claim restriction type";
-    #[error]
-    const E_INVALID_DEVICE_FINGERPRINT: vector<u8> = b"Invalid device fingerprint";
-    #[error]
-    const E_INSUFFICIENT_TOTAL_FOR_DISTINCT: vector<u8> = b"Insufficient total amount to guarantee distinct random shares";
-    #[error]
-    const E_NOT_AUTHORIZED: vector<u8> = b"You are not authorized to claim this private airdrop";
-    #[error]
-    const E_EMPTY_AUTHORIZED_LIST: vector<u8> = b"Private airdrops must have at least one authorized address";
-    #[error]
-    const E_CUSTOM_AMOUNTS_MISMATCH: vector<u8> = b"Custom amounts count must match authorized addresses count";
-    #[error]
-    const E_CUSTOM_AMOUNTS_SUM_MISMATCH: vector<u8> = b"Sum of custom amounts must equal total amount";
-    #[error]
-    const E_DUPLICATE_ADDRESS: vector<u8> = b"Duplicate address in authorized list";
+    
+    const E_INVALID_RECEIVER_LIMIT: u64 = 1;
+    
+    const E_INSUFFICIENT_AMOUNT: u64 = 2;
+    
+    const E_ALREADY_CLAIMED: u64 = 3;
+    
+    const E_DEVICE_ALREADY_CLAIMED: u64 = 4;
+    
+    const E_DROPLET_EXPIRED: u64 = 5;
+    
+    const E_DROPLET_CLOSED: u64 = 6;
+    
+    const E_RECEIVER_LIMIT_REACHED: u64 = 7;
+    
+    const E_INSUFFICIENT_BALANCE: u64 = 8;
+    
+    const E_DROPLET_NOT_FOUND: u64 = 9;
+    
+    const E_INVALID_FEE_PERCENTAGE: u64 = 10;
+    
+    const E_INVALID_DROPLET_ID: u64 = 11;
+    
+    const E_INVALID_NAME_LENGTH: u64 = 12;
+    
+    const E_NAME_ALREADY_TAKEN: u64 = 13;
+    
+    const E_INVALID_DISTRIBUTION_TYPE: u64 = 14;
+    
+    const E_NOT_CREATOR: u64 = 15;
+    
+    const E_CANNOT_DELETE_CLAIMED: u64 = 16;
+    
+    const E_INVALID_CLAIM_RESTRICTION: u64 = 17;
+    
+    const E_INVALID_DEVICE_FINGERPRINT: u64 = 18;
+    
+    const E_INSUFFICIENT_TOTAL_FOR_DISTINCT: u64 = 19;
+    
+    const E_NOT_AUTHORIZED: u64 = 20;
+    
+    const E_EMPTY_AUTHORIZED_LIST: u64 = 21;
+    
+    const E_CUSTOM_AMOUNTS_MISMATCH: u64 = 22;
+    
+    const E_CUSTOM_AMOUNTS_SUM_MISMATCH: u64 = 23;
+    
+    const E_DUPLICATE_ADDRESS: u64 = 24;
 
     public struct DropletRegistry has key {
         id: UID,
@@ -237,6 +237,7 @@ module airdrop::private_airdrops;
             name_to_address: table::new(ctx),
         };
         sui::transfer::share_object(registry);
+        
     }
 
     entry fun register_name(
