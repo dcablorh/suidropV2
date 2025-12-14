@@ -9,21 +9,17 @@ module airdrop::public_airdrops;
     use sui::bcs;
     use sui::event;
     use std::string::{Self, String};
+    use airdrop::admin::{AdminCap, generate_droplet_id};
 
-    // ===== Constants =====
     const CONTRACT_OWNER: address = @owner;
-    const DEFAULT_EXPIRY_HOURS: u64 = 48; // 48 hours default
+    const DEFAULT_EXPIRY_HOURS: u64 = 48; 
     const MILLISECONDS_PER_HOUR: u64 = 3600000;
     
-    // Distribution Types
     const DISTRIBUTION_TYPE_EQUAL: u8 = 0;
     const DISTRIBUTION_TYPE_RANDOM: u8 = 1;
     
-    // Claim Restriction Types
-    const CLAIM_RESTRICTION_ADDRESS: u8 = 0; // One claim per address
-    const CLAIM_RESTRICTION_DEVICE: u8 = 1;  // One claim per device (address + device fingerprint)
-    
-    // Error codes
+    const CLAIM_RESTRICTION_ADDRESS: u8 = 0; 
+    const CLAIM_RESTRICTION_DEVICE: u8 = 1;  
     
     const E_INVALID_RECEIVER_LIMIT: u64 = 1;
     
@@ -85,20 +81,17 @@ module airdrop::public_airdrops;
         num_claimed: u64,
         created_at: u64,
         expiry_time: u64, 
-        claimed: Table<address, String>, // address -> claimer name
-        device_claims: Table<String, bool>, // device_fingerprint -> claimed
+        claimed: Table<address, String>, 
+        device_claims: Table<String, bool>, 
         claimers_list: vector<address>, 
         claimer_names: vector<String>, 
         coin: Coin<CoinType>,
         is_closed: bool,
         message: String,
-        distribution_type: u8, // 0 = equal, 1 = random
-        claim_restriction: u8, // 0 = address only, 1 = address + device
-        random_shares: Table<u64, u64>, // claim_index -> amount (for random distribution)
-    }
-
-    public struct AdminCap has key {
-        id: UID,
+        distribution_type: u8, 
+        claim_restriction: u8, 
+        random_shares: Table<u64, u64>,
+        token_type_name: String,
     }
 
     public struct DropletInfo has copy, drop {
@@ -118,6 +111,7 @@ module airdrop::public_airdrops;
         claimer_names: vector<String>,
         distribution_type: u8,
         claim_restriction: u8,
+        token_type: String,
     }
 
     public struct UserNameRegistered has copy, drop {
@@ -134,6 +128,7 @@ module airdrop::public_airdrops;
         total_amount: u64,
         fee_amount: u64,
         net_amount: u64,
+        token_type: String,
         receiver_limit: u64,
         expiry_hours: u64,
         message: String,
@@ -148,21 +143,12 @@ module airdrop::public_airdrops;
         droplet_id: String,
         claimer: address,
         claimer_name: String,
+        token_type: String,
         claim_amount: u64,
         message: String,
+        sender_name: String,
         claimed_at: u64,
         device_fingerprint: Option<String>,
-    }
-
-    public struct DropletClosed has copy, drop {
-        droplet_id: String,
-        sender: address,
-        refund_amount: u64,
-        total_claimed: u64,
-        num_claimers: u64,
-        reason: String,
-        closed_at: u64,
-        remaining_amount: u64,
     }
 
     public struct AirdropDeleted has copy, drop {
@@ -188,15 +174,10 @@ module airdrop::public_airdrops;
     }
 
     fun init(ctx: &mut TxContext) {
-        let admin_cap = AdminCap {
-            id: object::new(ctx),
-        };
-        sui::transfer::transfer(admin_cap, tx_context::sender(ctx));
-
         let registry = DropletRegistry {
             id: object::new(ctx),
             droplets: table::new(ctx),
-            fee_percentage: 130, // 1.3% in basis points
+            fee_percentage: 130, 
             total_droplets_created: 0,
             total_fees_collected: table::new(ctx),
             user_created_droplets: table::new(ctx),
@@ -247,30 +228,10 @@ module airdrop::public_airdrops;
         });
     }
 
-    fun generate_droplet_id(sender: address, timestamp: u64, ctx: &mut TxContext): String {
-        let mut data = vector::empty<u8>();
-        vector::append(&mut data, address::to_bytes(sender));
-        vector::append(&mut data, bcs::to_bytes(&timestamp));
-        vector::append(&mut data, bcs::to_bytes(&tx_context::fresh_object_address(ctx)));
-        
-        let hash_bytes = hash::keccak256(&data);
-        let mut id_chars = vector::empty<u8>();
-        
-        let charset = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-        let mut i = 0;
-        while (i < 6 && i < vector::length(&hash_bytes)) {
-            let byte_val = *vector::borrow(&hash_bytes, i);
-            let char_index = (byte_val as u64) % 36;
-            vector::push_back(&mut id_chars, *vector::borrow(&charset, char_index));
-            i = i + 1;
-        };
-        
-        string::utf8(id_chars)
-    }
-
     #[allow(unused_type_parameter)]
     fun get_token_type<CoinType>(): String {
-        string::utf8(b"COIN_TYPE")
+        // Returns placeholder - for production, store actual coin type during droplet creation
+        string::utf8(b"TOKEN")
     }
 
     fun calculate_claim_amount(remaining_amount: u64, remaining_receivers: u64): u64 {
@@ -281,7 +242,6 @@ module airdrop::public_airdrops;
         }
     }
 
-    // Generate random weight for distribution
     fun generate_random_weight(
         sender: address,
         claimer_index: u64,
@@ -293,7 +253,6 @@ module airdrop::public_airdrops;
         vector::append(&mut data, bcs::to_bytes(&claimer_index));
         vector::append(&mut data, bcs::to_bytes(&created_at));
         
-        // Manually copy string bytes
         let string_bytes = string::as_bytes(&droplet_id);
         let len = vector::length(string_bytes);
         let mut i = 0;
@@ -312,14 +271,12 @@ module airdrop::public_airdrops;
                 weight = weight * 256 + (byte_val as u64);
                 i = i + 1;
             };
-            // Return weight between 1 and 10000 to avoid zeros
             (weight % 10000) + 1
         } else {
-            5000 // Fallback to middle value
+            5000 
         }
     }
 
-    // Pre-calculate random distribution using the improved algorithm
     fun precalculate_random_distribution<CoinType>(
         droplet: &mut Droplet<CoinType>,
         _ctx: &mut TxContext
@@ -327,11 +284,9 @@ module airdrop::public_airdrops;
         let total_cents = droplet.total_amount;
         let num_receivers = droplet.receiver_limit;
         
-        // Check feasibility: need at least x(x+1)/2 cents for distinct amounts
         let min_cents_needed = (num_receivers * (num_receivers + 1)) / 2;
         assert!(total_cents >= min_cents_needed, E_INSUFFICIENT_TOTAL_FOR_DISTINCT);
         
-        // Step 1: Assign baseline (1, 2, 3, ..., x)
         let mut baseline_sum: u64 = 0;
         let mut i: u64 = 1;
         while (i <= num_receivers) {
@@ -339,10 +294,8 @@ module airdrop::public_airdrops;
             i = i + 1;
         };
         
-        // Step 2: Calculate leftover to distribute
         let leftover = total_cents - baseline_sum;
         
-        // Step 3: Generate random weights
         let mut weights = vector::empty<u64>();
         let mut weight_sum: u64 = 0;
         i = 0;
@@ -358,9 +311,8 @@ module airdrop::public_airdrops;
             i = i + 1;
         };
         
-        // Step 4 & 5: Allocate leftover proportionally using largest remainder method
         let mut floors = vector::empty<u64>();
-        let mut fractions = vector::empty<u64>(); // Store as fixed-point (multiply by 10000)
+        let mut fractions = vector::empty<u64>(); 
         let mut floor_sum: u64 = 0;
         
         i = 0;
@@ -378,7 +330,6 @@ module airdrop::public_airdrops;
         
         let remainder = leftover - floor_sum;
         
-        // Distribute remainder to indices with largest fractions
         let mut adjustments = vector::empty<u64>();
         i = 0;
         while (i < num_receivers) {
@@ -406,7 +357,6 @@ module airdrop::public_airdrops;
             distributed = distributed + 1;
         };
         
-        // Step 6: Calculate final amounts
         i = 0;
         while (i < num_receivers) {
             let baseline = i + 1;
@@ -453,7 +403,6 @@ module airdrop::public_airdrops;
         clock: &Clock,
         ctx: &mut TxContext 
     ) {
-        // Validations
         assert!(receiver_limit > 0 && receiver_limit <= 100000, E_INVALID_RECEIVER_LIMIT);
         assert!(total_amount > 0, E_INSUFFICIENT_AMOUNT);
         assert!(distribution_type <= 1, E_INVALID_DISTRIBUTION_TYPE);
@@ -469,23 +418,18 @@ module airdrop::public_airdrops;
         };
         let expiry_time = current_time + (hours * MILLISECONDS_PER_HOUR);
 
-        // Calculate fee - fee is added on top of the amount to send
         let fee_amount = (total_amount * registry.fee_percentage) / 10000;
         let total_with_fee = total_amount + fee_amount;
         
-        // Verify user provided enough coins (amount + fee)
         assert!(coin::value(&coin) >= total_with_fee, E_INSUFFICIENT_AMOUNT);
 
-        // Split coin for fee and send to contract owner
         if (fee_amount > 0) {
             let fee_coin = coin::split(&mut coin, fee_amount, ctx);
             sui::transfer::public_transfer(fee_coin, CONTRACT_OWNER);
         };
 
-        // The remaining coin should equal exactly the total_amount
         let remaining_coin_value = coin::value(&coin);
         
-        // If user sent more than needed, refund excess
         if (remaining_coin_value > total_amount) {
             let excess = remaining_coin_value - total_amount;
             let refund_coin = coin::split(&mut coin, excess, ctx);
@@ -497,7 +441,6 @@ module airdrop::public_airdrops;
 
         let droplet_id = generate_droplet_id(sender, current_time, ctx);
         
-        // Update fee tracking
         let token_type = get_token_type<CoinType>();
         if (!table::contains(&registry.total_fees_collected, token_type)) {
             table::add(&mut registry.total_fees_collected, token_type, 0);
@@ -505,7 +448,6 @@ module airdrop::public_airdrops;
         let current_fees = table::borrow_mut(&mut registry.total_fees_collected, token_type);
         *current_fees = *current_fees + fee_amount;
 
-        // Create droplet object
         let droplet_uid = object::new(ctx);
         let mut droplet = Droplet<CoinType> {
             id: droplet_uid,
@@ -527,9 +469,9 @@ module airdrop::public_airdrops;
             distribution_type,
             claim_restriction,
             random_shares: table::new(ctx),
+            token_type_name: token_type,
         };
 
-        // Pre-calculate random distribution if needed
         if (distribution_type == DISTRIBUTION_TYPE_RANDOM) {
             precalculate_random_distribution(&mut droplet, ctx);
         };
@@ -555,6 +497,7 @@ module airdrop::public_airdrops;
             total_amount: total_with_fee,
             net_amount: final_coin_value,
             fee_amount,
+            token_type,
             receiver_limit,
             expiry_hours: hours,
             message,
@@ -588,11 +531,9 @@ module airdrop::public_airdrops;
             string::utf8(b"Anonymous")
         };
 
-        // Check claim restrictions
         assert!(!droplet.is_closed, E_DROPLET_CLOSED);
         assert!(!table::contains(&droplet.claimed, claimer), E_ALREADY_CLAIMED);
         
-        // Check device restriction if enabled
         if (droplet.claim_restriction == CLAIM_RESTRICTION_DEVICE) {
             assert!(option::is_some(&device_fingerprint), E_INVALID_DEVICE_FINGERPRINT);
             let fingerprint = *option::borrow(&device_fingerprint);
@@ -609,12 +550,10 @@ module airdrop::public_airdrops;
         let remaining_balance = coin::value(&droplet.coin);
         assert!(remaining_balance > 0, E_INSUFFICIENT_BALANCE);
 
-        // Calculate claim amount
         let claim_amount = if (droplet.distribution_type == DISTRIBUTION_TYPE_EQUAL) {
             let remaining_receivers = droplet.receiver_limit - droplet.num_claimed;
             calculate_claim_amount(remaining_balance, remaining_receivers)
         } else {
-            // Use pre-calculated random share
             *table::borrow(&droplet.random_shares, droplet.num_claimed)
         };
 
@@ -629,12 +568,17 @@ module airdrop::public_airdrops;
         let claim_coin = coin::split(&mut droplet.coin, final_claim_amount, ctx);
         sui::transfer::public_transfer(claim_coin, claimer);
 
-        // Update state
         table::add(&mut droplet.claimed, claimer, claimer_name);
         
         if (droplet.claim_restriction == CLAIM_RESTRICTION_DEVICE && option::is_some(&device_fingerprint)) {
             let fingerprint = *option::borrow(&device_fingerprint);
             table::add(&mut droplet.device_claims, fingerprint, true);
+        };
+        
+        let sender_name = if (table::contains(&registry.user_names, droplet.sender)) {
+            *table::borrow(&registry.user_names, droplet.sender)
+        } else {
+            string::utf8(b"Anonymous")
         };
         
         vector::push_back(&mut droplet.claimers_list, claimer);
@@ -649,14 +593,16 @@ module airdrop::public_airdrops;
             claimer,
             claimer_name,
             claim_amount: final_claim_amount,
+            token_type: get_token_type<CoinType>(),
             message: droplet.message,
+            sender_name: sender_name,
             claimed_at: current_time,
             device_fingerprint,
         });
 
         let remaining_after_claim = coin::value(&droplet.coin);
         if (droplet.num_claimed >= droplet.receiver_limit || remaining_after_claim == 0) {
-            close_droplet(droplet, string::utf8(b"completed"), current_time, ctx);
+            cleanup_expired_droplet(droplet, clock, ctx);
         };
     }
 
@@ -703,19 +649,11 @@ module airdrop::public_airdrops;
 
     fun cleanup_expired_droplet<CoinType>(
         droplet: &mut Droplet<CoinType>,
-        clock: &Clock,
+        _clock: &Clock,
         ctx: &mut TxContext
     ) {
-        let current_time = clock::timestamp_ms(clock);
-        close_droplet(droplet, string::utf8(b"expired"), current_time, ctx);
-    }
-
-    fun close_droplet<CoinType>(
-        droplet: &mut Droplet<CoinType>,
-        reason: String,
-        current_time: u64,
-        ctx: &mut TxContext
-    ) {
+        assert!(!droplet.is_closed, E_DROPLET_CLOSED);
+        
         let remaining_balance = coin::value(&droplet.coin);
         
         if (remaining_balance > 0) {
@@ -724,17 +662,6 @@ module airdrop::public_airdrops;
         };
         
         droplet.is_closed = true;
-        
-        event::emit(DropletClosed {
-            droplet_id: droplet.droplet_id,
-            sender: droplet.sender,
-            refund_amount: remaining_balance,
-            total_claimed: droplet.claimed_amount,
-            num_claimers: droplet.num_claimed,
-            remaining_amount: remaining_balance,
-            reason,
-            closed_at: current_time,
-        });
     }
 
     entry fun set_fee_percentage(
@@ -756,8 +683,6 @@ module airdrop::public_airdrops;
             timestamp: clock::timestamp_ms(clock),
         });
     }
-
-    // ===== View Functions =====
 
     public fun get_droplet_info<CoinType>(
         droplet: &Droplet<CoinType>,
@@ -784,6 +709,7 @@ module airdrop::public_airdrops;
             claimer_names: droplet.claimer_names,
             distribution_type: droplet.distribution_type,
             claim_restriction: droplet.claim_restriction,
+            token_type: get_token_type<CoinType>(),
         }
     }
 
@@ -998,7 +924,6 @@ module airdrop::public_airdrops;
         CLAIM_RESTRICTION_DEVICE
     }
 
-    // Get pre-calculated random share for a specific claim index
     public fun get_random_share<CoinType>(droplet: &Droplet<CoinType>, claim_index: u64): Option<u64> {
         if (droplet.distribution_type == DISTRIBUTION_TYPE_RANDOM && 
             table::contains(&droplet.random_shares, claim_index)) {
@@ -1008,7 +933,6 @@ module airdrop::public_airdrops;
         }
     }
 
-    // Get all pre-calculated random shares (for testing/verification)
     public fun get_all_random_shares<CoinType>(droplet: &Droplet<CoinType>): vector<u64> {
         let mut shares = vector::empty<u64>();
         
@@ -1025,7 +949,6 @@ module airdrop::public_airdrops;
         shares
     }
 
-    // Verify that random distribution sums correctly
     public fun verify_random_distribution<CoinType>(droplet: &Droplet<CoinType>): (bool, u64, u64) {
         if (droplet.distribution_type != DISTRIBUTION_TYPE_RANDOM) {
             return (false, 0, 0)
@@ -1044,7 +967,6 @@ module airdrop::public_airdrops;
         (total == droplet.total_amount, total, droplet.total_amount)
     }
 
-    // Check if amounts are all distinct
     public fun check_distinct_shares<CoinType>(droplet: &Droplet<CoinType>): bool {
         if (droplet.distribution_type != DISTRIBUTION_TYPE_RANDOM) {
             return false

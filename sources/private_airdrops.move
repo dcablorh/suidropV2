@@ -10,6 +10,7 @@ module airdrop::private_airdrops;
     use sui::bcs;
     use sui::event;
     use std::string::{Self, String};
+    use airdrop::admin::{AdminCap, generate_droplet_id};
 
     // ===== Constants =====
     const CONTRACT_OWNER: address = @owner;
@@ -110,10 +111,7 @@ module airdrop::private_airdrops;
         allocation_amounts: Table<address, u64>, // For custom distribution
         random_shares: Table<u64, u64>, // claim_index -> amount (for random distribution)
         address_to_index: Table<address, u64>, // Map address to their claim index
-    }
-
-    public struct AdminCap has key {
-        id: UID,
+        token_type_name: String,
     }
 
     public struct DropletInfo has copy, drop {
@@ -134,6 +132,7 @@ module airdrop::private_airdrops;
         distribution_type: u8,
         claim_restriction: u8,
         authorized_count: u64,
+        token_type: String,
     }
 
     public struct UserNameRegistered has copy, drop {
@@ -171,30 +170,11 @@ module airdrop::private_airdrops;
         device_fingerprint: Option<String>,
     }
 
-    public struct DropletClosed has copy, drop {
-        droplet_id: String,
-        sender: address,
-        refund_amount: u64,
-        total_claimed: u64,
-        num_claimers: u64,
-        reason: String,
-        closed_at: u64,
-        remaining_amount: u64,
-    }
-
     public struct AirdropDeleted has copy, drop {
         droplet_id: String,
         sender: address,
         refund_amount: u64,
         deleted_at: u64,
-    }
-
-    public struct AuthorizedAddressAdded has copy, drop {
-        droplet_id: String,
-        address: address,
-        allocation_amount: Option<u64>,
-        added_by: address,
-        timestamp: u64,
     }
 
     public struct AuthorizedAddressRemoved has copy, drop {
@@ -220,11 +200,6 @@ module airdrop::private_airdrops;
     }
 
     fun init(ctx: &mut TxContext) {
-        let admin_cap = AdminCap {
-            id: object::new(ctx),
-        };
-        sui::transfer::transfer(admin_cap, tx_context::sender(ctx));
-
         let registry = DropletRegistry {
             id: object::new(ctx),
             droplets: table::new(ctx),
@@ -237,7 +212,6 @@ module airdrop::private_airdrops;
             name_to_address: table::new(ctx),
         };
         sui::transfer::share_object(registry);
-        
     }
 
     entry fun register_name(
@@ -280,30 +254,10 @@ module airdrop::private_airdrops;
         });
     }
 
-    fun generate_droplet_id(sender: address, timestamp: u64, ctx: &mut TxContext): String {
-        let mut data = vector::empty<u8>();
-        vector::append(&mut data, address::to_bytes(sender));
-        vector::append(&mut data, bcs::to_bytes(&timestamp));
-        vector::append(&mut data, bcs::to_bytes(&tx_context::fresh_object_address(ctx)));
-        
-        let hash_bytes = hash::keccak256(&data);
-        let mut id_chars = vector::empty<u8>();
-        
-        let charset = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-        let mut i = 0;
-        while (i < 6 && i < vector::length(&hash_bytes)) {
-            let byte_val = *vector::borrow(&hash_bytes, i);
-            let char_index = (byte_val as u64) % 36;
-            vector::push_back(&mut id_chars, *vector::borrow(&charset, char_index));
-            i = i + 1;
-        };
-        
-        string::utf8(id_chars)
-    }
-
     #[allow(unused_type_parameter)]
     fun get_token_type<CoinType>(): String {
-        string::utf8(b"COIN_TYPE")
+        // Returns placeholder - for production, store actual coin type during droplet creation
+        string::utf8(b"TOKEN")
     }
 
     fun calculate_claim_amount(remaining_amount: u64, remaining_receivers: u64): u64 {
@@ -566,6 +520,7 @@ module airdrop::private_airdrops;
             allocation_amounts: table::new(ctx),
             random_shares: table::new(ctx),
             address_to_index: table::new(ctx),
+            token_type_name: token_type,
         };
 
         // Setup address to index mapping for random distribution
@@ -636,42 +591,6 @@ module airdrop::private_airdrops;
         });
 
         sui::transfer::share_object(droplet);
-    }
-
-    // Add authorized address to existing private airdrop (only creator)
-    entry fun add_authorized_address<CoinType>(
-        droplet: &mut Droplet<CoinType>,
-        new_address: address,
-        allocation_amount: Option<u64>,
-        clock: &Clock,
-        ctx: &mut TxContext
-    ) {
-        let sender = tx_context::sender(ctx);
-        assert!(sender == droplet.sender, E_NOT_CREATOR);
-        assert!(!droplet.is_closed, E_DROPLET_CLOSED);
-        assert!(!vec_set::contains(&droplet.authorized_addresses, &new_address), E_DUPLICATE_ADDRESS);
-
-        vec_set::insert(&mut droplet.authorized_addresses, new_address);
-        droplet.receiver_limit = droplet.receiver_limit + 1;
-
-        // For custom distribution, add allocation
-        if (droplet.distribution_type == DISTRIBUTION_TYPE_CUSTOM) {
-            assert!(option::is_some(&allocation_amount), E_CUSTOM_AMOUNTS_MISMATCH);
-            let amount = *option::borrow(&allocation_amount);
-            table::add(&mut droplet.allocation_amounts, new_address, amount);
-        };
-
-        // Add to address index mapping
-        let new_index = droplet.receiver_limit - 1;
-        table::add(&mut droplet.address_to_index, new_address, new_index);
-
-        event::emit(AuthorizedAddressAdded {
-            droplet_id: droplet.droplet_id,
-            address: new_address,
-            allocation_amount,
-            added_by: sender,
-            timestamp: clock::timestamp_ms(clock),
-        });
     }
 
     // Remove authorized address from private airdrop (only creator, before they claim)
@@ -807,11 +726,9 @@ module airdrop::private_airdrops;
 
         let remaining_after_claim = coin::value(&droplet.coin);
         
-        // Close droplet if all authorized addresses have attempted to claim
-        // OR if remaining balance is 0
-        // This ensures unclaimed allocations (blocked by device restriction) get refunded
+        // Auto-close droplet when all recipients claim or balance is empty
         if (droplet.num_claimed >= droplet.receiver_limit || remaining_after_claim == 0) {
-            close_droplet(droplet, string::utf8(b"completed"), current_time, ctx);
+            cleanup_expired_droplet(droplet, clock, ctx);
         };
     }
 
@@ -858,19 +775,11 @@ module airdrop::private_airdrops;
 
     fun cleanup_expired_droplet<CoinType>(
         droplet: &mut Droplet<CoinType>,
-        clock: &Clock,
+        _clock: &Clock,
         ctx: &mut TxContext
     ) {
-        let current_time = clock::timestamp_ms(clock);
-        close_droplet(droplet, string::utf8(b"expired"), current_time, ctx);
-    }
-
-    fun close_droplet<CoinType>(
-        droplet: &mut Droplet<CoinType>,
-        reason: String,
-        current_time: u64,
-        ctx: &mut TxContext
-    ) {
+        assert!(!droplet.is_closed, E_DROPLET_CLOSED);
+        
         let remaining_balance = coin::value(&droplet.coin);
         
         if (remaining_balance > 0) {
@@ -879,17 +788,6 @@ module airdrop::private_airdrops;
         };
         
         droplet.is_closed = true;
-        
-        event::emit(DropletClosed {
-            droplet_id: droplet.droplet_id,
-            sender: droplet.sender,
-            refund_amount: remaining_balance,
-            total_claimed: droplet.claimed_amount,
-            num_claimers: droplet.num_claimed,
-            remaining_amount: remaining_balance,
-            reason,
-            closed_at: current_time,
-        });
     }
 
     // ===== Admin Functions =====
@@ -943,6 +841,7 @@ module airdrop::private_airdrops;
             distribution_type: droplet.distribution_type,
             claim_restriction: droplet.claim_restriction,
             authorized_count,
+            token_type: get_token_type<CoinType>(),
         }
     }
 
